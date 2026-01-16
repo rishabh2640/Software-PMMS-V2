@@ -436,6 +436,92 @@ async function start_backend() {
         }
     });
 
+    /**Get machine readings for graph visualization */
+    app.get('/get_machine_readings/:machine_id', async (req, res) => {
+        try {
+            const { machine_id } = req.params;
+            const { date } = req.query; // Optional date parameter (YYYY-MM-DD format)
+
+            // Get machine info first
+            const machine = await machine_info.findOne({ machine_id });
+            if (!machine) {
+                return res.status(404).json({
+                    success: false,
+                    message: 'Machine not found'
+                });
+            }
+
+            // Determine date range
+            let targetDate;
+            if (date) {
+                targetDate = new Date(date);
+            } else {
+                targetDate = new Date();
+            }
+
+            // Create a date object shifted to IST to get the correct "Day" components
+            const istDate = new Date(targetDate.getTime() + (5.5 * 60 * 60 * 1000));
+            const year = istDate.getUTCFullYear();
+            const month = istDate.getUTCMonth();
+            const dateNum = istDate.getUTCDate();
+
+            // Calculate day boundaries in UTC
+            const IST_Offset_Ms = 5.5 * 60 * 60 * 1000;
+            const dayStartUTC = Date.UTC(year, month, dateNum, 0, 0, 0, 0);
+            const dayStart = new Date(dayStartUTC - IST_Offset_Ms);
+            const dayEnd = new Date(dayStartUTC - IST_Offset_Ms + (24 * 60 * 60 * 1000) - 1);
+
+            // Fetch readings for the day
+            const readings = await machine_reading.find({
+                machineId: machine_id,
+                timestamp: { $gte: dayStart, $lte: dayEnd }
+            }).sort({ timestamp: 1 });
+
+            // Transform readings to graph format
+            const graphData = readings.map(reading => {
+                let status = 'off';
+
+                if (machine.machine_type === 'onoff') {
+                    status = reading.value === 1 ? 'on' : 'off';
+                } else if (machine.machine_type === 'current') {
+                    status = reading.value >= machine.on_current ? 'on' : 'off';
+                } else if (machine.machine_type === 'counter') {
+                    // For counter, we need to check if it's increasing
+                    const idx = readings.indexOf(reading);
+                    if (idx > 0 && reading.value > readings[idx - 1].value) {
+                        status = 'on';
+                    } else if (idx === 0 && reading.value > 0) {
+                        status = 'on';
+                    }
+                }
+
+                return {
+                    timestamp: reading.timestamp,
+                    status: status,
+                    value: reading.value
+                };
+            });
+
+            res.status(200).json({
+                success: true,
+                machine_id,
+                machine_type: machine.machine_type,
+                date: targetDate.toISOString().split('T')[0],
+                count: graphData.length,
+                data: graphData
+            });
+
+        } catch (error) {
+            console.error('Error fetching machine readings:', error);
+            res.status(500).json({
+                success: false,
+                message: 'Internal server error',
+                error: error.message
+            });
+        }
+    });
+
+
     /*Start listening to the server */
     app.listen(3000, () => {
         console.log('[ EXPRESS SERVER ] Server is running on http://localhost:3000')
